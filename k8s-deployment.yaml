@@ -1,0 +1,66 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: ai-service
+  namespace: fluent-life
+  labels:
+    app: ai-service
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: ai-service
+  template:
+    metadata:
+      labels:
+        app: ai-service
+    spec:
+      containers:
+        - name: ai-service
+          image: dockerzxb/fluent-life-ai-service:latest
+          imagePullPolicy: Always
+          ports:
+            - containerPort: 8002
+              name: http
+          env:
+            - name: PORT
+              value: "8002"
+            - name: EMBEDDING_MODEL
+              value: "BAAI/bge-small-zh-v1.5"
+            - name: CHROMA_DB_PATH
+              value: "/app/chroma_db"
+            - name: DOUBAO_API_KEY
+              value: "b77a3674-2b68-47e0-9c3d-89bbd1ddde85"
+            - name: ARK_API_KEY
+              value: "b77a3674-2b68-47e0-9c3d-89bbd1ddde85"
+            - name: DOUBAO_MODEL_ID
+              value: "ep-m-20260113142855-wqkg9"
+          resources:
+            limits:
+              cpu: "1000m"
+              memory: "2Gi"
+            requests:
+              cpu: "500m"
+              memory: "1Gi"
+          volumeMounts:
+            - name: chroma-data
+              mountPath: /app/chroma_db
+      volumes:
+        - name: chroma-data
+          emptyDir: {}
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: ai-service
+  namespace: fluent-life
+  labels:
+    app: ai-service
+spec:
+  selector:
+    app: ai-service
+  ports:
+    - port: 8002
+      targetPort: 8002
+      name: http
+  type: ClusterIP

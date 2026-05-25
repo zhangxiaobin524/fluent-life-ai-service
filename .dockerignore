@@ -1,0 +1,60 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+env/
+venv/
+ENV/
+build/
+develop-eggs/
+dist/
+downloads/
+eggs/
+.eggs/
+lib/
+lib64/
+parts/
+sdist/
+var/
+wheels/
+*.egg-info/
+.installed.cfg
+*.egg
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# Git
+.git/
+.gitignore
+
+# Docker
+Dockerfile
+.dockerignore
+
+# 模型文件（如果有大文件）
+*.bin
+*.pt
+*.pth
+*.onnx
+*.safetensors
+models/
+checkpoints/
+
+# 测试文件
+test_*.py
+*_test.py
+
+# ChromaDB 数据（运行时挂载，不需要在镜像中）
+chroma_db/
+
+# 其他
+README.md
+*.md
+.DS_Store
