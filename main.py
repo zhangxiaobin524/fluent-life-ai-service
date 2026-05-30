@@ -349,6 +349,146 @@ async def search_knowledge_base(request: SearchKnowledgeBaseRequest):
         raise HTTPException(status_code=500, detail=f"搜索失败: {str(e)}")
 
 
+# ==================== RAG 对话接口（带完整上下文追踪）====================
+
+class RAGChatRequest(BaseModel):
+    """RAG 对话请求"""
+    question: str
+    collection_name: str = "stutter_correction"
+    n_results: int = 3
+    user_context: Optional[str] = None
+
+
+class RAGChatResponse(BaseModel):
+    """RAG 对话响应（包含评测所需全部字段）"""
+    question: str
+    contexts: List[str]
+    context_ids: List[str]
+    answer: str
+    model_used: str
+    retrieval_time_ms: float
+    generation_time_ms: float
+
+
+async def retrieve_contexts(question: str, collection_name: str, n_results: int = 3) -> tuple:
+    """
+    检索相关上下文
+    返回: (contexts列表, context_ids列表, retrieval_time_ms)
+    """
+    start_time = time.time()
+    
+    try:
+        collection = chroma_client.get_collection(name=collection_name)
+        query_embedding = get_embedding(question)
+        
+        results = collection.query(
+            query_embeddings=[query_embedding],
+            n_results=n_results,
+            include=["documents", "metadatas", "distances"]
+        )
+        
+        # 提取检索结果
+        contexts = []
+        context_ids = []
+        if results['documents'] and results['documents'][0]:
+            for i, doc in enumerate(results['documents'][0]):
+                if doc:
+                    contexts.append(doc)
+                    context_ids.append(results['ids'][0][i] if results['ids'] else f"doc_{i}")
+        
+        retrieval_time = (time.time() - start_time) * 1000
+        return contexts, context_ids, retrieval_time
+        
+    except Exception as e:
+        print(f"检索失败: {e}")
+        return [], [], 0
+
+
+async def generate_answer(question: str, contexts: List[str], user_context: Optional[str] = None) -> tuple:
+    """
+    基于上下文生成回答
+    返回: (answer, model_used, generation_time_ms)
+    """
+    start_time = time.time()
+    
+    # 构建系统提示
+    system_prompt = """你是 Fluent Life 口吃矫正助手，基于以下参考资料回答用户问题。
+请确保回答：
+1. 基于提供的参考资料
+2. 专业、准确、易懂
+3. 如果不确定，请说明"根据现有资料无法确定"
+
+参考资料：
+"""
+    
+    # 添加上下文
+    for i, ctx in enumerate(contexts, 1):
+        system_prompt += f"\n[{i}] {ctx}\n"
+    
+    # 添加用户背景（如果有）
+    if user_context:
+        system_prompt += f"\n用户背景信息：{user_context}\n"
+    
+    try:
+        # 使用项目中已配置的 embedding_client (DeepSeek)
+        if embedding_client is None:
+            return "错误：LLM 客户端未初始化", "error", 0
+        
+        response = embedding_client.chat.completions.create(
+            model="deepseek-chat",
+            messages=[
+                {"role": "system", "content": system_prompt},
+                {"role": "user", "content": question}
+            ],
+            temperature=0.7,
+            max_tokens=800
+        )
+        
+        answer = response.choices[0].message.content
+        generation_time = (time.time() - start_time) * 1000
+        
+        return answer, "deepseek-chat", generation_time
+        
+    except Exception as e:
+        print(f"生成失败: {e}")
+        return "抱歉，生成回答时出现错误。", "error", (time.time() - start_time) * 1000
+
+
+@app.post("/rag/chat", response_model=RAGChatResponse)
+async def rag_chat(request: RAGChatRequest):
+    """
+    RAG 对话接口 - 完整记录检索和生成过程
+    用于：日常对话 + RAGAS 评测数据采集
+    """
+    try:
+        # 1. 检索相关上下文
+        contexts, context_ids, retrieval_time = await retrieve_contexts(
+            question=request.question,
+            collection_name=request.collection_name,
+            n_results=request.n_results
+        )
+        
+        # 2. 生成回答
+        answer, model_used, generation_time = await generate_answer(
+            question=request.question,
+            contexts=contexts,
+            user_context=request.user_context
+        )
+        
+        return RAGChatResponse(
+            question=request.question,
+            contexts=contexts,
+            context_ids=context_ids,
+            answer=answer,
+            model_used=model_used,
+            retrieval_time_ms=round(retrieval_time, 2),
+            generation_time_ms=round(generation_time, 2)
+        )
+        
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"RAG对话失败: {str(e)}")
+
+
 @app.get("/knowledge-base/collections")
 async def list_collections():
     """列出所有知识库集合"""

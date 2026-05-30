@@ -399,19 +399,25 @@ class InterviewManager:
     
     def process_answer(self, session_id: str, answer: str) -> Dict[str, Any]:
         """处理候选人回答"""
+        print(f"📥 [面试] 收到回答 - session_id: {session_id}, answer: {answer[:50]}...")
+        
         if session_id not in self.contexts:
+            print(f"❌ [面试] 会话不存在: {session_id}")
             return {"error": "面试会话不存在"}
         
         context = self.contexts[session_id]
+        print(f"📊 [面试] 当前进度: {context.question_count}/{context.max_questions}")
         
         # 1. Observer分析这次回答
         last_question = context.conversation_history[-1]["content"] if context.conversation_history else ""
+        print(f"📝 [面试] 分析问题 - 问题: {last_question[:50]}...")
         observation = self.observer.analyze_response(
             last_question, 
             answer, 
             context.question_count
         )
         context.observations.append(observation)
+        print(f"✅ [面试] 观察分析完成 - 流畅度: {observation.fluency_score}, 情绪: {observation.emotional_state}")
         
         # 2. 记录回答
         context.conversation_history.append({
@@ -431,11 +437,13 @@ class InterviewManager:
             }
         
         # 4. Interviewer生成下一个问题
+        print(f"🤖 [面试] InterviewerAgent 生成下一个问题...")
         next_question = self.interviewer.generate_question(context)
         context.conversation_history.append({
             "role": "interviewer",
             "content": next_question
         })
+        print(f"✅ [面试] 生成问题完成: {next_question[:50]}...")
         
         return {
             "status": "ongoing",

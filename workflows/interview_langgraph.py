@@ -122,9 +122,9 @@ def call_llm(prompt: str, system_prompt: str, temperature: float = 0.7) -> str:
 
 
 def mock_llm_response(prompt: str) -> str:
-    """Mock LLM 响应（用于测试）"""
+    """Mock LLM 响应（LLM调用失败时的默认回复）"""
     if "生成面试问题" in prompt or "question" in prompt.lower():
-        return "请介绍一下你在之前项目中解决过的一个技术难题。"
+        return "你好，欢迎参加此次面试。请先简单介绍一下你自己。"
     elif "分析" in prompt:
         return json.dumps({
             "fluency_score": 7,
@@ -135,7 +135,7 @@ def mock_llm_response(prompt: str) -> str:
             "suggestions": ["语速可以再慢一点"],
             "analysis": "整体表达较为流畅，逻辑清晰。"
         })
-    return "Mock response"
+    return "你好，我是AI面试官，欢迎参加此次面试。让我们开始吧。"
 
 
 # ============ Agent 实现 ============

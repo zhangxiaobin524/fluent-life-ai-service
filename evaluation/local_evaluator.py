@@ -332,7 +332,7 @@ def run_local_evaluation():
     )
     
     # 生成报告
-    evaluator.generate_report("local_evaluation_report.md")
+    evaluator.generate_report("evaluation/reports/local_evaluation_report.md")
     
     print("\n" + "="*70)
     print(" 评测结果:")

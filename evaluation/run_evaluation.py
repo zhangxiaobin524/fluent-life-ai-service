@@ -179,7 +179,7 @@ async def main():
     
     # 生成报告
     print("\n📊 生成评测报告...")
-    report = evaluator.generate_report("evaluation_report.md")
+    report = evaluator.generate_report("evaluation/reports/evaluation_report.md")
     
     # 控制台摘要
     print("\n" + "="*70)
@@ -198,7 +198,7 @@ async def main():
     else:
         print("❌ 整体表现较差，需要重点优化")
     
-    print(f"\n详细报告已保存: evaluation_report.md")
+    print(f"\n详细报告已保存: evaluation/reports/evaluation_report.md")
 
 
 if __name__ == "__main__":

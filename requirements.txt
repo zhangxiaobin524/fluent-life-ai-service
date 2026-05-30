@@ -34,3 +34,8 @@ langchain-openai==0.2.11
 
 # 豆包 API
 volcengine-python-sdk
+
+# RAGAS 评测框架
+ragas==0.1.21
+datasets==2.21.0
+langchain-core>=0.3.0
