@@ -5,6 +5,7 @@ Fluent Life AI Service
 """
 
 import os
+import io
 import asyncio
 import time
 import uuid
@@ -501,25 +502,38 @@ async def list_collections():
         raise HTTPException(status_code=500, detail=f"获取集合列表失败: {str(e)}")
 
 
-# ==================== 长期记忆系统 ====================
+# ==================== 增强长期记忆系统 ====================
 
 class SaveMemoryRequest(BaseModel):
-    """保存长期记忆请求"""
+    """保存长期记忆请求 - 支持多种记忆类型"""
     user_id: str
-    dialogue: str
+    content: str                    # 记忆内容
+    memory_type: str = "dialogue"   # dialogue | practice | behavior | mood | goal | learning_preference
     topic: str = "一般对话"
     timestamp: str
+    metadata: dict = {}             # 扩展元数据（如练习得分、模块名、页面路径等）
 
 
 class SearchMemoryRequest(BaseModel):
-    """搜索长期记忆请求"""
+    """搜索长期记忆请求 - 支持按类型过滤"""
     user_id: str
     query: str
     n_results: int = 3
+    memory_type: Optional[str] None  # 可选，过滤特定类型
 
 
 # 长期记忆集合名称
 LONG_TERM_MEMORY_COLLECTION = "user_long_term_memory"
+
+# 记忆类型中文映射
+MEMORY_TYPE_LABELS = {
+    "dialogue": "对话记录",
+    "practice": "练习记录",
+    "behavior": "行为日志",
+    "mood": "情绪变化",
+    "goal": "目标里程碑",
+    "learning_preference": "学习偏好",
+}
 
 
 def get_or_create_memory_collection():
@@ -529,7 +543,7 @@ def get_or_create_memory_collection():
     except Exception:
         collection = chroma_client.create_collection(
             name=LONG_TERM_MEMORY_COLLECTION,
-            metadata={"description": "用户长期对话记忆"}
+            metadata={"description": "用户增强长期记忆系统"}
         )
     return collection
 
@@ -537,41 +551,52 @@ def get_or_create_memory_collection():
 @app.post("/memory/save")
 async def save_long_term_memory(request: SaveMemoryRequest):
     """
-    保存对话到长期记忆（向量库）
+    保存多种类型的长期记忆（向量库）
     
-    流程：
-    1. 将对话内容转为向量
-    2. 存入 ChromaDB，附带用户ID、话题、时间等元数据
-    3. 后续可通过向量相似度搜索相关历史
+    支持的记忆类型：
+    - dialogue: AI对话聊天
+    - practice: 练习记录（练了什么、多久、得分）
+    - behavior: 操作行为日志（点了哪些页面、用了什么功能）
+    - mood: 情绪变化（练习前后心情自评）
+    - goal: 目标里程碑（设定目标、完成关键节点）
+    - learning_preference: 学习偏好（活跃时间、喜欢的方式）
     """
     try:
         collection = get_or_create_memory_collection()
         
-        # 生成唯一ID
-        memory_id = f"{request.user_id}_{int(time.time() * 1000)}"
+        # 生成唯一ID（包含类型前缀便于识别）
+        memory_id = f"{request.user_id}_{request.memory_type}_{int(time.time() * 1000)}"
         
-        # 将对话转为向量
-        dialogue_embedding = get_embedding(request.dialogue)
+        # 将内容转为向量
+        content_embedding = get_embedding(request.content)
+        
+        # 构建元数据（包含所有扩展信息）
+        metadata = {
+            "user_id": request.user_id,
+            "memory_type": request.memory_type,
+            "topic": request.topic,
+            "timestamp": request.timestamp,
+            "type_label": MEMORY_TYPE_LABELS.get(request.memory_type, "其他"),
+        }
+        # 合并用户传入的扩展元数据
+        metadata.update(request.metadata)
         
         # 存入向量库
         collection.add(
-            embeddings=[dialogue_embedding],
-            documents=[request.dialogue],
-            metadatas=[{
-                "user_id": request.user_id,
-                "topic": request.topic,
-                "timestamp": request.timestamp,
-                "type": "dialogue"
-            }],
+            embeddings=[content_embedding],
+            documents=[request.content],
+            metadatas=[metadata],
             ids=[memory_id]
         )
         
-        print(f"💾 长期记忆已保存: user={request.user_id}, topic={request.topic}")
+        print(f"💾 [{MEMORY_TYPE_LABELS.get(request.memory_type, '记忆')}] 已保存: "
+              f"user={request.user_id}, topic={request.topic}, type={request.memory_type}")
         
         return {
             "success": True,
             "memory_id": memory_id,
             "user_id": request.user_id,
+            "memory_type": request.memory_type,
             "topic": request.topic
         }
     except HTTPException:
@@ -585,10 +610,16 @@ async def search_long_term_memory(request: SearchMemoryRequest):
     """
     搜索长期记忆（向量相似度检索）
     
+    支持按 memory_type 过滤：
+    - 不传或 None：搜索所有类型
+    - 传 "practice"：只搜练习记录
+    - 传 "dialogue"：只搜对话记录
+    - 等等...
+    
     流程：
     1. 将查询转为向量
-    2. 在向量库中搜索相似对话（只搜索该用户的）
-    3. 返回最相关的N条历史对话
+    2. 在向量库中搜索（可按类型过滤）
+    3. 返回最相关的N条历史记忆
     """
     try:
         collection = get_or_create_memory_collection()
@@ -596,11 +627,16 @@ async def search_long_term_memory(request: SearchMemoryRequest):
         # 将查询转为向量
         query_embedding = get_embedding(request.query)
         
-        # 向量搜索，只搜索该用户的记忆
+        # 构建过滤条件
+        where_filter = {"user_id": request.user_id}
+        if request.memory_type:
+            where_filter["memory_type"] = request.memory_type
+        
+        # 向量搜索
         results = collection.query(
             query_embeddings=[query_embedding],
             n_results=request.n_results,
-            where={"user_id": request.user_id},  # 过滤条件：只查该用户
+            where=where_filter,
             include=["documents", "metadatas", "distances"]
         )
         
@@ -608,14 +644,21 @@ async def search_long_term_memory(request: SearchMemoryRequest):
         memories = []
         if results['documents'] and len(results['documents'][0]) > 0:
             for i in range(len(results['documents'][0])):
+                meta = results['metadatas'][0][i]
                 memories.append({
-                    "dialogue": results['documents'][0][i],
-                    "topic": results['metadatas'][0][i].get("topic", "未知"),
-                    "timestamp": results['metadatas'][0][i].get("timestamp", ""),
-                    "distance": results['distances'][0][i]
+                    "content": results['documents'][0][i],
+                    "topic": meta.get("topic", "未知"),
+                    "memory_type": meta.get("memory_type", "unknown"),
+                    "type_label": meta.get("type_label", "未知"),
+                    "timestamp": meta.get("timestamp", ""),
+                    "distance": results['distances'][0][i],
+                    "metadata": {k: v for k, v in meta.items() 
+                                if k not in ["user_id", "memory_type", "topic", "timestamp", "type_label"]}
                 })
         
-        print(f"🔍 长期记忆搜索: user={request.user_id}, query={request.query[:20]}..., found={len(memories)}")
+        type_hint = f"[{request.memory_type}] " if request.memory_type else ""
+        print(f"🔍 长期记忆搜索{type_hint}: user={request.user_id}, "
+              f"query={request.query[:20]}..., found={len(memories)}")
         
         return {
             "success": True,
@@ -632,7 +675,7 @@ async def search_long_term_memory(request: SearchMemoryRequest):
 
 @app.get("/memory/stats/{user_id}")
 async def get_memory_stats(user_id: str):
-    """获取用户长期记忆统计"""
+    """获取用户长期记忆统计 - 按类型分布"""
     try:
         collection = get_or_create_memory_collection()
         
@@ -642,19 +685,83 @@ async def get_memory_stats(user_id: str):
             include=["metadatas"]
         )
         
-        # 统计话题分布
+        # 统计类型和话题分布
+        type_count = {}
         topic_count = {}
         for metadata in results['metadatas']:
+            mem_type = metadata.get("memory_type", "unknown")
+            type_label = MEMORY_TYPE_LABELS.get(mem_type, mem_type)
+            type_count[type_label] = type_count.get(type_label, 0) + 1
+            
             topic = metadata.get("topic", "未知")
             topic_count[topic] = topic_count.get(topic, 0) + 1
         
         return {
             "user_id": user_id,
             "total_memories": len(results['ids']),
+            "type_distribution": type_count,
             "topic_distribution": topic_count
         }
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"获取记忆统计失败: {str(e)}")
+
+
+# ==================== 批量保存接口（用于练习记录等批量数据） ====================
+
+class BatchSaveMemoryRequest(BaseModel):
+    """批量保存请求"""
+    memories: List[SaveMemoryRequest]  # 一次保存多条
+
+
+@app.post("/memory/batch-save")
+async def batch_save_long_term_memory(request: BatchSaveMemoryRequest):
+    """批量保存长期记忆（减少网络开销）"""
+    try:
+        collection = get_or_create_memory_collection()
+        
+        ids = []
+        embeddings = []
+        documents = []
+        metadatas = []
+        
+        now_ms = int(time.time() * 1000)
+        for i, mem in enumerate(request.memories):
+            memory_id = f"{mem.user_id}_{mem.memory_type}_{now_ms + i}"
+            content_embedding = get_embedding(mem.content)
+            
+            metadata = {
+                "user_id": mem.user_id,
+                "memory_type": mem.memory_type,
+                "topic": mem.topic,
+                "timestamp": mem.timestamp,
+                "type_label": MEMORY_TYPE_LABELS.get(mem.memory_type, "其他"),
+            }
+            metadata.update(mem.metadata)
+            
+            ids.append(memory_id)
+            embeddings.append(content_embedding)
+            documents.append(mem.content)
+            metadatas.append(metadata)
+        
+        if ids:
+            collection.add(
+                embeddings=embeddings,
+                documents=documents,
+                metadatas=metadatas,
+                ids=ids
+            )
+        
+        print(f"💾 批量保存记忆 {len(ids)} 条")
+        
+        return {
+            "success": True,
+            "count": len(ids),
+            "memory_ids": ids
+        }
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"批量保存失败: {str(e)}")
 
 
 # ==================== 通用AI生成接口 ====================
@@ -1227,7 +1334,8 @@ async def interview_observation(session_id: str):
             "data": {
                 "session_id": session_id,
                 "current_observation": pending_observation,
-                "has_observation": pending_observation is not None
+                "has_observation": pending_observation is not None,
+                "conversation_history": state.get("conversation_history", [])
             }
         }
         
