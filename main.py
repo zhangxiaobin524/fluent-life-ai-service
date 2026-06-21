@@ -1376,6 +1376,210 @@ async def interview_end(request: InterviewEndRequest):
         raise HTTPException(status_code=500, detail=f"结束面试失败: {str(e)}")
 
 
+# ==================== 语音流畅度分析接口 ====================
+
+class SpeechMetricsRequest(BaseModel):
+    """语音流畅度分析请求"""
+    transcription: str                              # ASR 转写的文本
+    duration_seconds: float                         # 录音时长（秒）
+    original_text: Optional[str] = ""               # 原文（如果是跟读练习）
+    practice_type: Optional[str] = "general"        # 练习类型：tongue-twister, expression, prolonged-speech, general
+
+class SpeechMetricsResponse(BaseModel):
+    """语音流畅度分析响应"""
+    speech_rate_wpm: float                          # 语速（字/分钟）
+    filler_word_count: int                          # 填充词数量
+    filler_words_found: List[str]                   # 具体填充词列表
+    repetition_count: int                           # 重复次数
+    repetitions_found: List[str]                    # 具体重复片段
+    fluency_score: float                            # 流畅度评分 0-100
+    analysis: str                                   # 简短分析建议
+    comparison_to_original: Optional[str] = None    # 跟读对比结果
+
+
+# 中文填充词集合
+FILLER_WORDS = [
+    "嗯", "呃", "啊", "那个", "这个", "就是", "然后", "反正",
+    "就是说", "基本上", "实际上", "然后呢", "所以说"
+]
+
+def count_filler_words(text: str) -> tuple:
+    """计算填充词数量和具体匹配结果"""
+    found = []
+    count = 0
+    for word in FILLER_WORDS:
+        # 使用正则避免部分匹配
+        import re
+        matches = re.findall(re.escape(word), text)
+        if matches:
+            count += len(matches)
+            found.extend(matches)
+    return count, found[:10]  # 最多返回10个
+
+def detect_repetitions(text: str) -> tuple:
+    """检测重复（如 我我我、就就就、天天天）"""
+    import re
+    found = []
+    # 检测连续重复的字或词（2次以上）
+    pattern = re.compile(r'([\w\u4e00-\u9fff])\1{2,}')
+    matches = pattern.findall(text)
+    for m in matches:
+        found.append(m * 3)
+    # 检测双字词重复（如 就是就是）
+    pattern2 = re.compile(r'([\u4e00-\u9fff]{2,4})\1{1,}')
+    matches2 = pattern2.findall(text)
+    for m in matches2:
+        found.append(m * 2)
+    return len(found), found[:10]
+
+
+@tracer.start_as_current_span("speech/analyze-metrics")
+async def generate_metrics_analysis(
+    transcription: str,
+    speech_rate_wpm: float,
+    filler_count: int,
+    repetition_count: int,
+    fluency_score: float,
+    practice_type: str,
+    original_text: Optional[str] = None
+) -> str:
+    """用 AI 生成流畅度分析建议"""
+    try:
+        prompt = f"""你是 Fluent Life 口吃矫正 App 的语音教练。请根据以下数据，用 30-50 字给出简洁、鼓励性 + 改进建议的分析。
+
+练习类型：{practice_type}
+语速：{speech_rate_wpm:.0f} 字/分钟
+填充词数量：{filler_count} 个
+重复次数：{repetition_count} 次
+流畅度评分：{fluency_score:.0f}/100
+"""
+
+        if original_text:
+            prompt += f"原文：{original_text}\n"
+        prompt += f"用户实际说的：{transcription[:100]}\n"
+
+        prompt += """
+请按这个格式回复：
+【总体】一句话总结表现
+【建议】一条具体可执行的改进建议
+【鼓励】一句鼓励的话
+
+不要超过50字，说人话。"""
+
+        from volcenginesdkarkruntime import Ark
+        client = Ark(base_url="https://ark.cn-beijing.volces.com/api/v3")
+
+        response = client.chat.completions.create(
+            model="doubao-pro-32k-241215",
+            messages=[
+                {"role": "system", "content": "你是一个温暖专业的口吃矫正语音教练，回复简洁有人情味。"},
+                {"role": "user", "content": prompt}
+            ],
+            max_tokens=300,
+            temperature=0.3,
+        )
+
+        return response.choices[0].message.content or "表现不错，继续加油！"
+
+    except Exception as e:
+        print(f"❌ AI分析生成失败: {e}")
+        # fallback
+        if fluency_score >= 80:
+            return f"很不错！语速自然，建议保持这个节奏，多练几次让肌肉记住。"
+        elif fluency_score >= 60:
+            return f"有进步空间！试试放慢语速，注意减少"{'嗯''呃'}"这类填充词。"
+        else:
+            return f"别着急，口吃矫正需要时间。今天先练呼吸，让气息带动声音。"
+
+
+@app.post("/speech/analyze-metrics", response_model=SpeechMetricsResponse)
+async def analyze_speech_metrics(request: SpeechMetricsRequest):
+    """
+    语音流畅度分析 - 计算客观指标 + AI 分析建议
+    
+    输入：ASR 转写文本 + 录音时长
+    输出：语速、填充词、重复次数、流畅度评分、AI 建议
+    """
+    try:
+        text = request.transcription.strip()
+        
+        # 1. 计算语速 (字/分钟)
+        char_count = len(text)
+        if request.duration_seconds > 0:
+            speech_rate_wpm = round((char_count / request.duration_seconds) * 60, 1)
+        else:
+            speech_rate_wpm = 0
+        
+        # 2. 检测填充词
+        filler_count, filler_found = count_filler_words(text)
+        
+        # 3. 检测重复
+        repetition_count, repetitions_found = detect_repetitions(text)
+        
+        # 4. 计算流畅度评分
+        if char_count == 0:
+            fluency_score = 0
+        else:
+            # 正常语速范围 100-250 字/分钟
+            rate_score = 100
+            if speech_rate_wpm < 50:
+                rate_score = max(20, speech_rate_wpm / 50 * 60)
+            elif speech_rate_wpm > 300:
+                rate_score = max(40, 100 - (speech_rate_wpm - 300) / 3)
+            else:
+                rate_score = 100  # 正常范围
+            
+            # 填充词扣分（每1个扣5分）
+            filler_penalty = min(filler_count * 5, 30)
+            
+            # 重复扣分（每1次扣8分）
+            repeat_penalty = min(repetition_count * 8, 40)
+            
+            fluency_score = max(0, min(100, rate_score - filler_penalty - repeat_penalty))
+        
+        # 5. AI 生成分析建议
+        analysis = await generate_metrics_analysis(
+            transcription=transcription,
+            speech_rate_wpm=speech_rate_wpm,
+            filler_count=filler_count,
+            repetition_count=repetition_count,
+            fluency_score=fluency_score,
+            practice_type=request.practice_type,
+            original_text=request.original_text or None
+        )
+        
+        # 6. 跟读对比（如果有原文）
+        comparison = None
+        if request.original_text and request.original_text.strip():
+            orig = request.original_text.strip()
+            # 简单的字面相似度
+            common = sum(1 for c in text if c in orig)
+            ratio = common / len(orig) if len(orig) > 0 else 0
+            if ratio >= 0.8:
+                comparison = "内容完整，基本复述了原文"
+            elif ratio >= 0.5:
+                comparison = "部分内容有遗漏或跑偏"
+            else:
+                comparison = "与原文差异较大"
+        
+        return SpeechMetricsResponse(
+            speech_rate_wpm=speech_rate_wpm,
+            filler_word_count=filler_count,
+            filler_words_found=filler_found,
+            repetition_count=repetition_count,
+            repetitions_found=repetitions_found,
+            fluency_score=round(fluency_score, 1),
+            analysis=analysis,
+            comparison_to_original=comparison
+        )
+        
+    except Exception as e:
+        import traceback
+        error_detail = f"{str(e)}\n{traceback.format_exc()}"
+        print(f"❌ 语音流畅度分析失败: {error_detail}")
+        raise HTTPException(status_code=500, detail=f"分析失败: {str(e)}")
+
+
 # ==================== 启动 ====================
 if __name__ == "__main__":
     import uvicorn
