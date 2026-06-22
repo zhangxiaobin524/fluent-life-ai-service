@@ -1489,7 +1489,7 @@ async def generate_metrics_analysis(
         if fluency_score >= 80:
             return f"很不错！语速自然，建议保持这个节奏，多练几次让肌肉记住。"
         elif fluency_score >= 60:
-            return f"有进步空间！试试放慢语速，注意减少"{'嗯''呃'}"这类填充词。"
+            return "有进步空间！试试放慢语速，注意减少「嗯」「呃」这类填充词。"
         else:
             return f"别着急，口吃矫正需要时间。今天先练呼吸，让气息带动声音。"
 
