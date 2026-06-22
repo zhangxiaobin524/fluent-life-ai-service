@@ -519,7 +519,7 @@ class SearchMemoryRequest(BaseModel):
     user_id: str
     query: str
     n_results: int = 3
-    memory_type: Optional[str] None  # 可选，过滤特定类型
+    memory_type: Optional[str] = None  # 可选，过滤特定类型
 
 
 # 长期记忆集合名称
