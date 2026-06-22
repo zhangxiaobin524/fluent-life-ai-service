@@ -776,13 +776,15 @@ class GenerateRequest(BaseModel):
 @app.post("/api/v1/ai/generate")
 async def generate_text(request: GenerateRequest):
     """
-    通用文本生成接口 - 调用豆包API
-    Go后端负责业务逻辑，此接口只负责纯AI调用
+    通用文本生成接口 - 调用阿里通义千问 API（兼容 OpenAI 格式）
     """
     try:
-        from volcenginesdkarkruntime import Ark
+        from openai import OpenAI
         
-        client = Ark(base_url="https://ark.cn-beijing.volces.com/api/v3")
+        client = OpenAI(
+            api_key="sk-38908e45373d4b52ad0e2fe9b4f23df0",
+            base_url="https://dashscope.aliyuncs.com/compatible-mode/v1"
+        )
         
         response = client.chat.completions.create(
             model=request.model,
